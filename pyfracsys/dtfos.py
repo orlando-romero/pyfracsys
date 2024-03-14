@@ -1,4 +1,5 @@
 from .fracdiff import fracdiff
+from .bisection import bisection_grid
 
 import torch
 import torch.nn as nn
@@ -37,7 +38,7 @@ class DTFOS(nn.Module):
         for b in range(self.B):
             self.X[b, :self.T[b], :self.n[b]] = data[b]
         
-        # Store corr matrices R and their pseudo-inverses
+        # Store correlation matrices and their pseudo-inverses
         self.R = torch.zeros(self.B, self.n_max, self.n_max).to(self.device, dtype=self.dtype)
         self.R_inv = torch.zeros(self.B, self.n_max, self.n_max).to(self.device, dtype=self.dtype)
         for b in range(self.B):
@@ -51,15 +52,65 @@ class DTFOS(nn.Module):
         # Pre-compute and store the fracdiff of the stored data
         self.Y = fracdiff(self.X, self.alpha)
             
-    # Compute per-channel MSEs
-    def _MSE(self):
+    def _MSE(self) -> torch.Tensor:
         E = self.resid()
         return torch.sum(E**2, dim=1)
     
-    def resid(self):
-        # print(self.Y[:3,:3,:3])
+    def resid(self) -> torch.Tensor:
         return self.Y[:,1:,:] - torch.bmm(self.X[:,:-1,:], self.A.transpose(1,2))
     
-
-# def reshape_data(data: list[torch.Tensor]) -> torch.Tensor:
-    
+    def fit_A(self) -> None:
+        C = torch.bmm(self.Y[:,1:,:].transpose(1,2), self.X[:,:-1,:])    
+        self.A = torch.bmm(C, self.R_inv)
+        
+    def fit(self,
+            alpha_min:float = 0.0,
+            alpha_max:float = 1.0,
+            num_grids:int = 2,
+            max_iter:int = 12,
+            tol:float = 1e-4) -> None:
+        
+        # Check that the input is valid
+        if not isinstance(alpha_min, float):
+            raise TypeError("`alpha_min' must be a float")
+        if not isinstance(alpha_max, float):
+            raise TypeError("`alpha_max' must be a float")
+        if not isinstance(num_grids, int):
+            raise TypeError("`num_grids' must be an int")
+        if not isinstance(max_iter, int):
+            raise TypeError("`max_iter' must be an int")
+        if not isinstance(tol, float):
+            raise TypeError("`tol' must be a float")
+        
+        if alpha_min < 0.0:
+            raise ValueError("`alpha_min' must be non-negative")
+        if alpha_max < 0.0:
+            raise ValueError("`alpha_max' must be non-negative")
+        if alpha_min > alpha_max:
+            raise ValueError("`alpha_min' must be less than or equal to `alpha_max'")
+        if num_grids < 1:
+            raise ValueError("`num_grids' must be at least 1")
+        if max_iter < 1:
+            raise ValueError("`max_iter' must be at least 1")
+        if tol <= 0.0:
+            raise ValueError("`tol' must be positive")
+        
+        def cost_fun(alpha: torch.Tensor) -> torch.Tensor:
+            self.alpha = alpha
+            self.Y = fracdiff(self.X, alpha) # TODO: force Y to be recomputed when alpha is reassigned
+            self.fit_A()
+            return self._MSE()
+        
+        alpha_min = torch.tensor(alpha_min).to(self.device, dtype=self.dtype)
+        alpha_max = torch.tensor(alpha_max).to(self.device, dtype=self.dtype)
+        
+        self.alpha = bisection_grid(
+            cost_fun,
+            alpha_min.repeat(self.B, self.n_max),
+            alpha_max.repeat(self.B, self.n_max),
+            num_grids,
+            max_iter,
+            tol
+            )
+        
+        self.fit_A()
