@@ -2,7 +2,7 @@ import torch
 from torchaudio.functional import fftconvolve
 
 # TODO: implement in-place fracdiff_kernel
-def fracdiff_kernel_(B, alpha, T):
+def fracdiff_kernel_(Psi, alpha, T):
     pass
 
 def fracdiff_kernel(alpha: torch.Tensor, T: int) -> torch.Tensor:
@@ -21,12 +21,12 @@ def fracdiff_kernel(alpha: torch.Tensor, T: int) -> torch.Tensor:
         alpha = alpha.unsqueeze(0)
         
     n = len(alpha)
-    B = torch.zeros(T, n).to(alpha.device, dtype=alpha.dtype)
+    Psi = torch.zeros(T, n).to(alpha.device, dtype=alpha.dtype)
     for i in range(n):
         t_range = torch.arange(T-1).to(alpha.device, dtype=alpha.dtype)
-        B[:, i] = torch.cat([torch.tensor([1.0]).to(alpha.device, dtype=alpha.dtype), torch.cumprod(-(alpha[i] - t_range) / (t_range + 1), dim=0)])
+        Psi[:, i] = torch.cat([torch.tensor([1.0]).to(alpha.device, dtype=alpha.dtype), torch.cumprod(-(alpha[i] - t_range) / (t_range + 1), dim=0)])
       
-    return B
+    return Psi
 
 def fracdiff(X: torch.Tensor, alpha: torch.Tensor) -> torch.Tensor:
     if not isinstance(X, torch.Tensor):
@@ -42,13 +42,11 @@ def fracdiff(X: torch.Tensor, alpha: torch.Tensor) -> torch.Tensor:
         raise ValueError("X and alpha must have the same precision")
     
     T, n = X.shape
-    if T < n:
-        raise TypeError("X must be T x n array with T >= n") # Do not check here!
     if alpha.dim() != 0 and alpha.dim() != 1:
         raise TypeError("alpha must be a scalar or a 1d array")
     if alpha.dim() == 1 and len(alpha) != n:
         raise TypeError("If alpha is a 1d array, then it must match the number of channels in the data")
     
-    B = fracdiff_kernel(alpha, T)
+    Psi = fracdiff_kernel(alpha, T)
 
-    return fftconvolve(B.T, X.T)[:, :T].T
+    return fftconvolve(Psi.T, X.T)[:, :T].T
