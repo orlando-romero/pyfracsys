@@ -44,15 +44,21 @@ class DTFOS(nn.Module):
             self.R[b,:,:] = self.X[b,:,:].T @ self.X[b,:,:]
             self.R_inv[b,:,:] = torch.linalg.pinv(self.R[b,:,:])
         
-        # Store the model parameters, A and alpha
-        self.A = nn.Parameter(torch.zeros(self.B, self.n_max, self.n_max).to(self.device, dtype=self.dtype))
-        self.alpha = nn.Parameter(torch.ones(self.B, self.n_max).to(self.device, dtype=self.dtype))
+        # Store the model parameters, A and alpha (nn.Parameter uses extra memory!)
+        self.A = torch.zeros(self.B, self.n_max, self.n_max).to(self.device, dtype=self.dtype)
+        self.alpha = torch.ones(self.B, self.n_max).to(self.device, dtype=self.dtype)
         
         # Pre-compute and store the fracdiff of the stored data
         self.Y = fracdiff(self.X, self.alpha)
             
-    def _MSE():
-        return None
+    # Compute per-channel MSEs
+    def _MSE(self):
+        E = self.resid()
+        return torch.sum(E**2, dim=1)
+    
+    def resid(self):
+        # print(self.Y[:3,:3,:3])
+        return self.Y[:,1:,:] - torch.bmm(self.X[:,:-1,:], self.A.transpose(1,2))
     
 
 # def reshape_data(data: list[torch.Tensor]) -> torch.Tensor:
