@@ -18,24 +18,14 @@ def fracdiff_kernel(alpha: torch.Tensor, T: int) -> torch.Tensor:
     
     if T < 1:
         raise ValueError("T must be at least 1")
-        
-    # TODO refactor this!!!
     
-    B, nn = alpha.shape
-    alpha = alpha.flatten()
+    B, n = alpha.shape
+    Psi = torch.ones(B, T, n, device=alpha.device, dtype=alpha.dtype)
+    t_range = torch.arange(1, T, device=alpha.device, dtype=alpha.dtype).unsqueeze(0).unsqueeze(-1)
     
-    n = len(alpha)
-    
-    t_range = torch.arange(1, T).to(alpha.device, dtype=alpha.dtype).view(-1, 1)  # Reshape for broadcasting
-    alpha_expanded = alpha.expand(T-1, n)  # Expand alpha for broadcasting
-    numerator = -(alpha_expanded - t_range + 1)
+    numerator = -(alpha.unsqueeze(1) - t_range + 1)
     denominator = t_range
- 
-    Psi_values = torch.cumprod(numerator / denominator, dim=0)
-    Psi = torch.cat([torch.ones(1, n).to(alpha.device, dtype=alpha.dtype), Psi_values], dim=0)
-
-    alpha = alpha.reshape(B, nn)
-    Psi = Psi.reshape(B, T, nn)
+    Psi[:, 1:, :] = torch.cumprod(numerator / denominator, dim=1)
     
     return Psi
 
