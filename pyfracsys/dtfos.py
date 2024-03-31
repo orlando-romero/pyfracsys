@@ -42,7 +42,7 @@ class DTFOS(nn.Module):
         self.R = torch.zeros(self.B, self.n_max, self.n_max).to(self.device, dtype=self.dtype)
         self.R_inv = torch.zeros(self.B, self.n_max, self.n_max).to(self.device, dtype=self.dtype)
         for b in range(self.B):
-            self.R[b,:,:] = self.X[b,:,:].T @ self.X[b,:,:]
+            self.R[b,:,:] = self.X[b,:-1,:].T @ self.X[b,:-1,:]
             self.R_inv[b,:,:] = torch.linalg.pinv(self.R[b,:,:])
         
         # Store the model parameters, A and alpha (nn.Parameter uses extra memory!)
@@ -53,15 +53,23 @@ class DTFOS(nn.Module):
         self.Y = fracdiff(self.X, self.alpha)
             
     def _MSE(self) -> torch.Tensor:
-        E = self.resid()
+        E = self._resid()
         return torch.sum(E**2, dim=1)
     
-    def resid(self) -> torch.Tensor:
+    def _resid(self) -> torch.Tensor:
         return self.Y[:,1:,:] - torch.bmm(self.X[:,:-1,:], self.A.transpose(1,2))
     
     def fit_A(self) -> None:
-        C = torch.bmm(self.Y[:,1:,:].transpose(1,2), self.X[:,:-1,:])    
+        C = torch.bmm(self.Y[:,1:,:].transpose(1,2), self.X[:,:-1,:])
         self.A = torch.bmm(C, self.R_inv)
+        
+    def MSE(self) -> torch.Tensor:
+        mse = self._MSE()
+        return [mse[b, :self.n[b]] for b in range(self.B)]
+    
+    def resid(self) -> torch.Tensor:
+        resid = self._resid()
+        return [resid[b, :self.T[b]-1, :self.n[b]] for b in range(self.B)]
         
     def fit(self,
             alpha_min:float = 0.0,
