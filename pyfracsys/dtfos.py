@@ -4,10 +4,10 @@ from .bisection import bisection_grid
 import torch
 import torch.nn as nn
 
-import gc
+from torch.nn.functional import relu
 
 class DTFOS(nn.Module):
-    def __init__(self, data: list[torch.Tensor]) -> None: # TODO: allow data to be provided in different formats
+    def __init__(self, data: list[torch.Tensor], normalize_data:bool=True) -> None: # TODO: allow data to be provided in different formats
         super().__init__()
                 
         # Check that the input is valid
@@ -26,42 +26,57 @@ class DTFOS(nn.Module):
             if X.device != self.device or X.dtype != self.dtype:
                 raise ValueError("All tensors in `data' must have the same device and dtype")
         
-        # Get the true (padded) dimensions of the data
         self.B = len(data)
         self.T = [data[b].shape[0] for b in range(self.B)]
         self.n = [data[b].shape[1] for b in range(self.B)]
         
-        # Pad the data with zeros to make them all the same length
+        # Store the data, padding it with zeros to make the num of observations and channels consistent
         self.T_max = max(self.T)
         self.n_max = max(self.n)
         self.X = torch.zeros(self.B, self.T_max, self.n_max).to(self.device, dtype=self.dtype)
         for b in range(self.B):
             self.X[b, :self.T[b], :self.n[b]] = data[b]
+            if normalize_data:
+                X_mean = torch.mean(self.X[b, :self.T[b], :self.n[b]], dim=0, keepdim=True)
+                X_std = torch.std(self.X[b, :self.T[b], :self.n[b]], dim=0, keepdim=True)
+                self.X[b, :self.T[b], :self.n[b]] = (self.X[b, :self.T[b], :self.n[b]] - X_mean) / X_std
         
-        # Store correlation matrices and their pseudo-inverses
-        self.R = torch.zeros(self.B, self.n_max, self.n_max).to(self.device, dtype=self.dtype)
-        self.R_inv = torch.zeros(self.B, self.n_max, self.n_max).to(self.device, dtype=self.dtype)
-        for b in range(self.B):
-            self.R[b,:,:] = self.X[b,:-1,:].T @ self.X[b,:-1,:]
-            self.R_inv[b,:,:] = torch.linalg.pinv(self.R[b,:,:])
+        if normalize_data:
+            for b in range(self.B):
+                X_mean = torch.mean(self.X[b, :self.T[b], :self.n[b]], dim=0, keepdim=True)
+                X_std = torch.std(self.X[b, :self.T[b], :self.n[b]], dim=0, keepdim=True)
+                self.X[b, :self.T[b], :self.n[b]] = (self.X[b, :self.T[b], :self.n[b]] - X_mean) / X_std
         
-        # Store the model parameters, A and alpha (nn.Parameter uses extra memory!)
-        self.A = torch.zeros(self.B, self.n_max, self.n_max).to(self.device, dtype=self.dtype)
-        self.alpha = torch.ones(self.B, self.n_max).to(self.device, dtype=self.dtype)
+        self.R_inv = None
         
-        # Pre-compute and store the fracdiff of the stored data
-        self.Y = fracdiff(self.X, self.alpha)
+        self.A = nn.Parameter(torch.zeros(self.B, self.n_max, self.n_max).to(self.device, dtype=self.dtype))
+        self.alpha = nn.Parameter(torch.ones(self.B, self.n_max).to(self.device, dtype=self.dtype))
             
     def _MSE(self) -> torch.Tensor:
         E = self._resid()
         return torch.sum(E**2, dim=1)
     
     def _resid(self) -> torch.Tensor:
-        return self.Y[:,1:,:] - torch.bmm(self.X[:,:-1,:], self.A.transpose(1,2))
+        Y = fracdiff(self.X, relu(self.alpha))
+        return Y[:,1:,:] - torch.bmm(self.X[:,:-1,:], self.A.transpose(1,2))
+    
+    def MSE_loss(self): # TODO: refactor this
+        loss_fun = nn.MSELoss()
+        Y = fracdiff(self.X, relu(self.alpha))[:,1:,:]
+        Yhat = torch.bmm(self.X[:,:-1,:], self.A.transpose(1,2))
+        return loss_fun(Y, Yhat)
     
     def fit_A(self) -> None:
-        C = torch.bmm(self.Y[:,1:,:].transpose(1,2), self.X[:,:-1,:])
-        self.A = torch.bmm(C, self.R_inv)
+        if self.R_inv is None:
+            R = torch.zeros(self.B, self.n_max, self.n_max).to(self.device, dtype=self.dtype)
+            self.R_inv = torch.zeros(self.B, self.n_max, self.n_max).to(self.device, dtype=self.dtype)
+            for b in range(self.B):
+                R[b,:,:] = self.X[b,:-1,:].T @ self.X[b,:-1,:]
+                self.R_inv[b,:,:] = torch.linalg.pinv(R[b,:,:])
+                
+        Y = fracdiff(self.X, relu(self.alpha))
+        C = torch.bmm(Y[:,1:,:].transpose(1,2), self.X[:,:-1,:])
+        self.A.data = torch.bmm(C, self.R_inv)
         
     def MSE(self) -> torch.Tensor:
         mse = self._MSE()
@@ -70,14 +85,27 @@ class DTFOS(nn.Module):
     def resid(self) -> torch.Tensor:
         resid = self._resid()
         return [resid[b, :self.T[b]-1, :self.n[b]] for b in range(self.B)]
+    
+    def fit(self, method="OLS", **kwargs):
+        if method == "OLS":
+            self.fit_OLS(**kwargs)
+        elif method == "LASSO":
+            self.fit_LASSO(**kwargs)
+        else:
+            raise ValueError("`method' must be 'OLS' or 'LASSO'")
         
-    def fit(self,
+    def fit_LASSO(self):
+        print("not yet implemented!")
+        pass
+        
+    def fit_OLS(self,
             alpha_min:float = 0.0,
             alpha_max:float = 1.0,
             num_grids:int = 2,
             max_iter:int = 12,
             tol:float = 1e-4) -> None:
         
+        # TODO: refactor
         # Check that the input is valid
         if not isinstance(alpha_min, float):
             raise TypeError("`alpha_min' must be a float")
@@ -103,22 +131,22 @@ class DTFOS(nn.Module):
         if tol <= 0.0:
             raise ValueError("`tol' must be positive")
         
-        def cost_fun(alpha: torch.Tensor) -> torch.Tensor:
-            self.alpha = alpha
-            self.Y = fracdiff(self.X, alpha) # TODO: force Y to be recomputed when alpha is reassigned
+        with torch.no_grad():
+            def cost_fun(alpha: torch.Tensor) -> torch.Tensor:
+                self.alpha.data = alpha
+                self.fit_A()
+                return self._MSE()
+            
+            alpha_min = torch.tensor(alpha_min).to(self.device, dtype=self.dtype)
+            alpha_max = torch.tensor(alpha_max).to(self.device, dtype=self.dtype)
+            
+            self.alpha.data = bisection_grid(
+                cost_fun,
+                alpha_min.repeat(self.B, self.n_max),
+                alpha_max.repeat(self.B, self.n_max),
+                num_grids,
+                max_iter,
+                tol
+                )
+            
             self.fit_A()
-            return self._MSE()
-        
-        alpha_min = torch.tensor(alpha_min).to(self.device, dtype=self.dtype)
-        alpha_max = torch.tensor(alpha_max).to(self.device, dtype=self.dtype)
-        
-        self.alpha = bisection_grid(
-            cost_fun,
-            alpha_min.repeat(self.B, self.n_max),
-            alpha_max.repeat(self.B, self.n_max),
-            num_grids,
-            max_iter,
-            tol
-            )
-        
-        self.fit_A()
