@@ -1,13 +1,18 @@
 from .fracdiff import fracdiff
 from .bisection import bisection_grid
 
+import numpy as np
+
 import torch
 import torch.nn as nn
-
 from torch.nn.functional import relu
+from torch.optim import SGD, Adam
+
+from tqdm import tqdm
+import matplotlib.pyplot as plt
 
 class DTFOS(nn.Module):
-    def __init__(self, data: list[torch.Tensor], normalize_data:bool=True) -> None: # TODO: allow data to be provided in different formats
+    def __init__(self, data: list[torch.Tensor], normalize_data:bool=True, train_ratio:float=0.8) -> None: # TODO: allow data to be provided in different formats
         super().__init__()
                 
         # Check that the input is valid
@@ -30,6 +35,8 @@ class DTFOS(nn.Module):
         self.T = [data[b].shape[0] for b in range(self.B)]
         self.n = [data[b].shape[1] for b in range(self.B)]
         
+        # self.T_train = [int(round(self.T[b] * train_ratio)) for b in range(self.B)]
+        
         # Store the data, padding it with zeros to make the num of observations and channels consistent
         self.T_max = max(self.T)
         self.n_max = max(self.n)
@@ -40,6 +47,8 @@ class DTFOS(nn.Module):
                 X_mean = torch.mean(self.X[b, :self.T[b], :self.n[b]], dim=0, keepdim=True)
                 X_std = torch.std(self.X[b, :self.T[b], :self.n[b]], dim=0, keepdim=True)
                 self.X[b, :self.T[b], :self.n[b]] = (self.X[b, :self.T[b], :self.n[b]] - X_mean) / X_std
+                
+        self.T_train = int(round(self.T_max * train_ratio)) # TODO: refactor
         
         if normalize_data:
             for b in range(self.B):
@@ -52,18 +61,22 @@ class DTFOS(nn.Module):
         self.A = nn.Parameter(torch.zeros(self.B, self.n_max, self.n_max).to(self.device, dtype=self.dtype))
         self.alpha = nn.Parameter(torch.ones(self.B, self.n_max).to(self.device, dtype=self.dtype))
             
-    def _MSE(self) -> torch.Tensor:
-        E = self._resid()
-        return torch.sum(E**2, dim=1)
+    def _MSE(self, X) -> torch.Tensor:
+        E = self._resid(X)
+        return torch.sum(E**2, dim=1) / E.shape[1]
     
-    def _resid(self) -> torch.Tensor:
-        Y = fracdiff(self.X, relu(self.alpha))
-        return Y[:,1:,:] - torch.bmm(self.X[:,:-1,:], self.A.transpose(1,2))
+    def _resid(self, X) -> torch.Tensor:
+        if X is None:
+            X = self.X
+        Y = fracdiff(X, relu(self.alpha))
+        return Y[:,1:,:] - torch.bmm(X[:,:-1,:], self.A.transpose(1,2))
     
-    def MSE_loss(self): # TODO: refactor this
+    def MSE_loss(self, X): # TODO: refactor this
         loss_fun = nn.MSELoss()
-        Y = fracdiff(self.X, relu(self.alpha))[:,1:,:]
-        Yhat = torch.bmm(self.X[:,:-1,:], self.A.transpose(1,2))
+        # Y = fracdiff(self.X, relu(self.alpha))[:,1:,:]
+        # Yhat = torch.bmm(self.X[:,:-1,:], self.A.transpose(1,2))
+        Y = fracdiff(X, relu(self.alpha))[:,1:,:]
+        Yhat = torch.bmm(X[:,:-1,:], self.A.transpose(1,2))
         return loss_fun(Y, Yhat)
     
     def fit_A(self) -> None:
@@ -78,12 +91,12 @@ class DTFOS(nn.Module):
         C = torch.bmm(Y[:,1:,:].transpose(1,2), self.X[:,:-1,:])
         self.A.data = torch.bmm(C, self.R_inv)
         
-    def MSE(self) -> torch.Tensor:
-        mse = self._MSE()
+    def MSE(self, X=None) -> torch.Tensor:
+        mse = self._MSE(X)
         return [mse[b, :self.n[b]] for b in range(self.B)]
     
-    def resid(self) -> torch.Tensor:
-        resid = self._resid()
+    def resid(self, X=None) -> torch.Tensor:
+        resid = self._resid(X)
         return [resid[b, :self.T[b]-1, :self.n[b]] for b in range(self.B)]
     
     def fit(self, method="OLS", **kwargs):
@@ -94,16 +107,93 @@ class DTFOS(nn.Module):
         else:
             raise ValueError("`method' must be 'OLS' or 'LASSO'")
         
-    def fit_LASSO(self):
-        print("not yet implemented!")
-        pass
+    def fit_LASSO(self,
+                  lambda_lasso=0.01,
+                  optimizer="ADAM",
+                  lr=0.001,
+                  n_iter=1000,
+                  show_progress=False,
+                  plot_losses=False):
+        
+        if optimizer == "ADAM":
+            optimizer = Adam(self.parameters(), lr=lr)
+        elif optimizer == "SGD":
+            optimizer = SGD(self.parameters(), lr=lr)
+        else:
+            raise ValueError("`optimizer' must be 'ADAM' or 'SGD'")
+        
+        losses_train, losses_test = [], []
+        # MSE_train, MSE_test = [], []
+        MSE_train_mean, MSE_train_std = [], []
+        MSE_test_mean, MSE_test_std = [], []
+        X_train, X_test = self.X[:,:self.T_train,:], self.X[:,self.T_train:,:]
+        for _ in tqdm(range(n_iter)):
+            optimizer.zero_grad()
+            
+            # MSE_train.append(self.MSE_loss(X_train).item())
+            # MSE_test.append(self.MSE_loss(X_test).item())
+            
+            # Y_train = fracdiff(X_train, relu(self.alpha))
+            # E_train = Y_train[:,1:,:] - torch.bmm(X_train[:,:-1,:], self.A.transpose(1,2))
+            # mse_train = (E_train ** 2).mean(dim=1)
+            
+            MSE_train = torch.hstack(self.MSE(X_train))
+            MSE_train_mean.append(MSE_train.mean().item())
+            MSE_train_std.append(MSE_train.std().item())
+            
+            MSE_test = torch.hstack(self.MSE(X_test))
+            MSE_test_mean.append(MSE_test.mean().item())
+            MSE_test_std.append(MSE_test.std().item())
+            
+            loss_test = self.MSE_loss(X_test) + lambda_lasso * self.A.abs().sum()
+            loss_train = self.MSE_loss(X_train) + lambda_lasso * self.A.abs().sum()
+            
+            loss_train.backward()
+            optimizer.step()
+            
+            losses_train.append(loss_train.item())
+            losses_test.append(loss_test.item())
+        
+        if plot_losses:
+            plt.plot(losses_train)
+            plt.plot(losses_test)
+            plt.xlabel("Iterations")
+            plt.ylabel("Loss = MSE + lambda * ||A||_1")
+            plt.legend(["Train", "Test"])
+            plt.show()
+            
+            iterations = range(len(MSE_train_mean))
+            
+            MSE_train_mean = np.array(MSE_train_mean)
+            MSE_train_std = np.array(MSE_train_std)
+            
+            MSE_test_mean = np.array(MSE_test_mean)
+            MSE_test_std = np.array(MSE_test_std)
+            
+            delta = 0.01
+            plt.plot(iterations, MSE_train_mean, label='Train')
+            plt.fill_between(iterations,
+                            MSE_train_mean - delta*MSE_train_std,
+                            MSE_train_mean + delta*MSE_train_std,
+                            color='blue', alpha=0.2)
+            
+            plt.plot(iterations, MSE_test_mean, label='Test')
+            plt.fill_between(iterations,
+                            MSE_test_mean - delta*MSE_test_std,
+                            MSE_test_mean + delta*MSE_test_std,
+                            color='orange', alpha=0.2)
+            
+            plt.xlabel("Iterations")
+            plt.ylabel("MSE")
+            plt.legend()
+            plt.show()
         
     def fit_OLS(self,
-            alpha_min:float = 0.0,
-            alpha_max:float = 1.0,
-            num_grids:int = 2,
-            max_iter:int = 12,
-            tol:float = 1e-4) -> None:
+                alpha_min:float = 0.0,
+                alpha_max:float = 1.0,
+                num_grids:int = 2,
+                max_iter:int = 12,
+                tol:float = 1e-4) -> None:
         
         # TODO: refactor
         # Check that the input is valid
