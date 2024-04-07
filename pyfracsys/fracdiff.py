@@ -1,10 +1,6 @@
 import torch
 from torchaudio.functional import fftconvolve
 
-# TODO: implement in-place fracdiff_kernel
-def fracdiff_kernel_(Psi, alpha, T):
-    pass
-
 def fracdiff_kernel(alpha: torch.Tensor, T: int) -> torch.Tensor:
     if not isinstance(alpha, torch.Tensor):
         raise TypeError("alpha must be a torch.Tensor")
@@ -20,12 +16,11 @@ def fracdiff_kernel(alpha: torch.Tensor, T: int) -> torch.Tensor:
         raise ValueError("T must be at least 1")
     
     B, n = alpha.shape
-    Psi = torch.ones(B, T, n, device=alpha.device, dtype=alpha.dtype)
-    t_range = torch.arange(1, T, device=alpha.device, dtype=alpha.dtype).unsqueeze(0).unsqueeze(-1)
     
-    numerator = -(alpha.unsqueeze(1) - t_range + 1)
-    denominator = t_range
-    Psi[:, 1:, :] = torch.cumprod(numerator / denominator, dim=1)
+    t_range = torch.arange(T-1, device=alpha.device, dtype=alpha.dtype).reshape(1,T-1,1)
+    
+    Psi = torch.ones(B, T, n, device=alpha.device, dtype=alpha.dtype)
+    Psi[:, 1:, :] = ((-1)**(t_range+1)) * torch.cumprod((alpha.unsqueeze(1) - t_range) / (t_range + 1), dim=1)
     
     return Psi
 
