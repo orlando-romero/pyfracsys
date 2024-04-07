@@ -1,4 +1,4 @@
-from .fracdiff import fracdiff
+from .fracdiff import fracdiff, fracdiff_kernel
 from .bisection import bisection_grid
 
 import numpy as np
@@ -7,6 +7,8 @@ import torch
 import torch.nn as nn
 from torch.nn.functional import relu
 from torch.optim import SGD, Adam
+
+from torchaudio.functional import fftconvolve
 
 from tqdm import tqdm
 import matplotlib.pyplot as plt
@@ -240,3 +242,18 @@ class DTFOS(nn.Module):
                 )
             
             self.fit_A()
+            
+    def _forecast(self, X=None, h=1):
+        if not isinstance(h, int) or h < 0:
+            raise ValueError("`h' must be a non-negative integer")
+    
+        B, T, n = self.X.shape
+        forecast_kernel = -fracdiff_kernel(self.alpha, T+1)[:,1:,:]
+        
+        X_hat = fftconvolve(forecast_kernel.transpose(1,2), X.transpose(1,2))[:,:,:T].transpose(1,2)
+        X_hat += torch.bmm(X, self.A.transpose(1,2))
+        
+        if h == 0:
+            return X_hat
+        else:
+            return self._forecast(X_hat, h-1)
