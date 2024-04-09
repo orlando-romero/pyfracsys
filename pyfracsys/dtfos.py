@@ -63,7 +63,9 @@ class DTFOS(nn.Module):
         self.A = nn.Parameter(torch.zeros(self.B, self.n_max, self.n_max).to(self.device, dtype=self.dtype))
         self.alpha = nn.Parameter(torch.ones(self.B, self.n_max).to(self.device, dtype=self.dtype))
             
-    def _MSE(self, X) -> torch.Tensor:
+    def _MSE(self, X=None) -> torch.Tensor:
+        if X is None:
+            X = self.X
         E = self._resid(X)
         return torch.sum(E**2, dim=1) / E.shape[1]
     
@@ -129,15 +131,8 @@ class DTFOS(nn.Module):
         MSE_train_mean, MSE_train_std = [], []
         MSE_test_mean, MSE_test_std = [], []
         X_train, X_test = self.X[:,:self.T_train,:], self.X[:,self.T_train:,:]
-        for _ in tqdm(range(n_iter)):
+        for _ in tqdm(range(n_iter)) if show_progress else range(n_iter):
             optimizer.zero_grad()
-            
-            # MSE_train.append(self.MSE_loss(X_train).item())
-            # MSE_test.append(self.MSE_loss(X_test).item())
-            
-            # Y_train = fracdiff(X_train, relu(self.alpha))
-            # E_train = Y_train[:,1:,:] - torch.bmm(X_train[:,:-1,:], self.A.transpose(1,2))
-            # mse_train = (E_train ** 2).mean(dim=1)
             
             MSE_train = torch.hstack(self.MSE(X_train))
             MSE_train_mean.append(MSE_train.mean().item())
@@ -157,11 +152,11 @@ class DTFOS(nn.Module):
             losses_test.append(loss_test.item())
         
         if plot_losses:
-            plt.plot(losses_train)
             plt.plot(losses_test)
+            plt.plot(losses_train)
             plt.xlabel("Iterations")
             plt.ylabel("Loss = MSE + lambda * ||A||_1")
-            plt.legend(["Train", "Test"])
+            plt.legend(["Test", "Train"])
             plt.show()
             
             iterations = range(len(MSE_train_mean))
@@ -172,18 +167,21 @@ class DTFOS(nn.Module):
             MSE_test_mean = np.array(MSE_test_mean)
             MSE_test_std = np.array(MSE_test_std)
             
-            delta = 0.01
-            plt.plot(iterations, MSE_train_mean, label='Train')
-            plt.fill_between(iterations,
-                            MSE_train_mean - delta*MSE_train_std,
-                            MSE_train_mean + delta*MSE_train_std,
-                            color='blue', alpha=0.2)
-            
-            plt.plot(iterations, MSE_test_mean, label='Test')
+            # delta = 0.01
+            delta = 0.1
+            plt.plot(iterations, MSE_test_mean, label=f'Test  (final = {MSE_test_mean[-1]:.4f}, min = {MSE_test_mean.min():.4f})')
             plt.fill_between(iterations,
                             MSE_test_mean - delta*MSE_test_std,
                             MSE_test_mean + delta*MSE_test_std,
+                            color='blue', alpha=0.2)
+            
+            plt.plot(iterations, MSE_train_mean, label=f'Train (final = {MSE_train_mean[-1]:.4f}, min = {MSE_train_mean.min():.4f})')
+            plt.fill_between(iterations,
+                            MSE_train_mean - delta*MSE_train_std,
+                            MSE_train_mean + delta*MSE_train_std,
                             color='orange', alpha=0.2)
+
+            
             
             plt.xlabel("Iterations")
             plt.ylabel("MSE")
