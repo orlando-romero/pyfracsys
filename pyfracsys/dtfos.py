@@ -69,7 +69,7 @@ class DTFOS(nn.Module):
         E = self._resid(X)
         return torch.sum(E**2, dim=1) / E.shape[1]
     
-    def _resid(self, X) -> torch.Tensor:
+    def _resid(self, X=None) -> torch.Tensor:
         if X is None:
             X = self.X
         Y = fracdiff(X, relu(self.alpha))
@@ -244,8 +244,11 @@ class DTFOS(nn.Module):
     def _forecast(self, X=None, h=1):
         if not isinstance(h, int) or h < 0:
             raise ValueError("`h' must be a non-negative integer")
+        
+        if X is None:
+            X = self.X
     
-        B, T, n = self.X.shape
+        B, T, n = X.shape
         forecast_kernel = -fracdiff_kernel(self.alpha, T+1)[:,1:,:]
         
         X_hat = fftconvolve(forecast_kernel.transpose(1,2), X.transpose(1,2))[:,:,:T].transpose(1,2)
@@ -255,3 +258,41 @@ class DTFOS(nn.Module):
             return X_hat
         else:
             return self._forecast(X_hat, h-1)
+        
+    def R2(self):
+        # X_test = self.X[:,self.T_train:,:]
+        # E_test = self.resid(X_test)
+        # # X = [self.X[b,:self.T[b], :self.n[b]] for b in range(self.B)]
+                
+        # # E_test = [E[b][self.T_train:, :] for b in range(self.B)]
+        # # X_test = [X[b][self.T_train:, :] for b in range(self.B)]
+        
+        # X_test = [X_test[b,:, :self.n[b]] for b in range(self.B)]
+        # E_test = [E_test[b][:, :self.n[b]] for b in range(self.B)]
+        
+        # # R2 = [1 - torch.sum(E_test[b]**2, axis=0) / torch.mean((X_test[b][1:,:])**2, axis=0) for b in range(self.B)]
+        # R2 = []
+        # for b in range(self.B):
+        #     numerator = torch.sum(E_test[b]**2, axis=0)
+        #     denominator = torch.mean((X_test[b][1:,:] - torch.mean(X_test[b][1:,:], axis=0))**2, axis=0)
+        #     R2.append(1 - numerator / denominator)
+        
+        # return R2
+        E = self.resid()
+        E = [E[b] for b in range(self.B)]
+        # X = [self.X[b,:self.T[b], :self.n[b]] for b in range(self.B)]
+        
+        R2 = []
+        for b in range(self.B):
+            X = self.X[b,:self.T[b], :self.n[b]]
+            # X_mean = torch.mean(X, dim=0, keepdim=True)
+            # X_std = torch.std(X, dim=0, keepdim=True)
+            # X = (X - X_mean) / X_std
+            
+            numerator = torch.sum(E[b]**2, axis=0)
+            # denominator = torch.mean((X[b][1:,:] - torch.mean(X[b][1:,:], axis=0))**2, axis=0)
+            denominator = torch.mean((X[1:,:] - torch.mean(X[1:,:], axis=0))**2, axis=0)
+            R2.append(1 - numerator / denominator)
+        
+        return R2
+        
