@@ -100,8 +100,8 @@ class DTFOS(nn.Module):
         return [mse[b, :self.n[b]] for b in range(self.B)]
     
     def resid(self, X=None) -> torch.Tensor:
-        resid = self._resid(X)
-        return [resid[b, :self.T[b]-1, :self.n[b]] for b in range(self.B)]
+        E = self._resid(X)
+        return [E[b, :self.T[b]-1, :self.n[b]] for b in range(self.B)]
     
     def fit(self, method="OLS", **kwargs):
         if method == "OLS":
@@ -249,50 +249,76 @@ class DTFOS(nn.Module):
             X = self.X
     
         B, T, n = X.shape
-        forecast_kernel = -fracdiff_kernel(self.alpha, T+1)[:,1:,:]
+        # forecast_kernel = -fracdiff_kernel(self.alpha, T+1)[:,1:,:]
         
-        X_hat = fftconvolve(forecast_kernel.transpose(1,2), X.transpose(1,2))[:,:,:T].transpose(1,2)
-        X_hat += torch.bmm(X, self.A.transpose(1,2))
+        # X_hat = fftconvolve(forecast_kernel.transpose(1,2), X.transpose(1,2))[:,:,:T].transpose(1,2)
+        # X_hat += torch.bmm(X, self.A.transpose(1,2))
+        
+        # if h == 0:
+        #     return X_hat
+        # else:
+        #     return self._forecast(X_hat, h-1)
+        
+        # if h == 1:
+        #     return X_hat
+        # else:
+        #     pass
+        
+        # X_hat = X.clone()    
+        # for h_ in range(1, h+1):
+        #     forecast_kernel = -fracdiff_kernel(self.alpha, T+h_)[:,h_:,:]
+        #     X_hat = fftconvolve(forecast_kernel.transpose(1,2), X_hat.transpose(1,2))[:,:,:T].transpose(1,2) + torch.bmm(X_hat, self.A.transpose(1,2))
+        # return X_hat
         
         if h == 0:
-            return X_hat
-        else:
-            return self._forecast(X_hat, h-1)
+            return X
+        
+        X_hat = torch.zeros_like(X)
+        
+        fracdiff_kernel_ = fracdiff_kernel(self.alpha, h)
+        for h_ in range(1, h):
+            X_hat -= fracdiff_kernel_[:,h-h_,:] * self._forecast(X, h_)
+        
+        forecast_kernel = fracdiff_kernel(self.alpha, T+h)[:,h:,:]
+        X_hat -= fftconvolve(forecast_kernel.transpose(1,2), X.transpose(1,2))[:,:,:T].transpose(1,2)
+        
+        X_hat += torch.bmm(self._forecast(X, h-1), self.A.transpose(1,2))
+        
+        return X_hat
         
     def R2(self):
-        # X_test = self.X[:,self.T_train:,:]
-        # E_test = self.resid(X_test)
-        # # X = [self.X[b,:self.T[b], :self.n[b]] for b in range(self.B)]
-                
-        # # E_test = [E[b][self.T_train:, :] for b in range(self.B)]
-        # # X_test = [X[b][self.T_train:, :] for b in range(self.B)]
-        
-        # X_test = [X_test[b,:, :self.n[b]] for b in range(self.B)]
-        # E_test = [E_test[b][:, :self.n[b]] for b in range(self.B)]
-        
-        # # R2 = [1 - torch.sum(E_test[b]**2, axis=0) / torch.mean((X_test[b][1:,:])**2, axis=0) for b in range(self.B)]
-        # R2 = []
-        # for b in range(self.B):
-        #     numerator = torch.sum(E_test[b]**2, axis=0)
-        #     denominator = torch.mean((X_test[b][1:,:] - torch.mean(X_test[b][1:,:], axis=0))**2, axis=0)
-        #     R2.append(1 - numerator / denominator)
-        
-        # return R2
         E = self.resid()
-        E = [E[b] for b in range(self.B)]
-        # X = [self.X[b,:self.T[b], :self.n[b]] for b in range(self.B)]
-        
         R2 = []
         for b in range(self.B):
             X = self.X[b,:self.T[b], :self.n[b]]
-            # X_mean = torch.mean(X, dim=0, keepdim=True)
-            # X_std = torch.std(X, dim=0, keepdim=True)
-            # X = (X - X_mean) / X_std
             
-            numerator = torch.sum(E[b]**2, axis=0)
-            # denominator = torch.mean((X[b][1:,:] - torch.mean(X[b][1:,:], axis=0))**2, axis=0)
-            denominator = torch.mean((X[1:,:] - torch.mean(X[1:,:], axis=0))**2, axis=0)
-            R2.append(1 - numerator / denominator)
+            X_plus = X[1:,:]
+            X_mean = torch.mean(X_plus, axis=0)
+            
+            R2_new = 1 - torch.sum(E[b]**2, axis=0) / torch.sum((X_plus - X_mean)**2, axis=0)
+            R2.append(R2_new)
         
         return R2
         
+    def _forecasting_resid(self, h=1):
+        X = self.X
+        X_hat = self._forecast(h=h)
+        return X[:,h:,:] - X_hat[:,:-h,:]
+    
+    def forecasting_resid(self, h=1):
+        E = self._forecasting_resid(h=h)
+        return [E[b, :self.T[b]-h, :self.n[b]] for b in range(self.B)]
+    
+    def forecasting_R2(self, h=1):
+        E = self.forecasting_resid(h=h)
+        R2 = []
+        for b in range(self.B):
+            X = self.X[b,:self.T[b], :self.n[b]]
+            
+            X_plus = X[h:,:]
+            X_mean = torch.mean(X_plus, axis=0)
+            
+            R2_new = 1 - torch.sum(E[b]**2, axis=0) / torch.sum((X_plus - X_mean)**2, axis=0)
+            R2.append(R2_new)
+        
+        return R2
